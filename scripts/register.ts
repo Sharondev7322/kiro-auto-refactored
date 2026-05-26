@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline'
 import { execSync } from 'node:child_process'
 import { registerKiroWithGoogle } from '../lib/register'
 import { registerKiroWithOpenRouter } from '../lib/register-with-openrouter'
+import { registerKiroWithGitHub } from '../lib/register-with-github'
 import { generateOpenRouterApiKey } from '../lib/openrouter'
 import { AccountPool } from '../lib/accounts'
 import type { BrowserEngine } from '../lib/browser'
@@ -32,6 +33,7 @@ type CliOptions = {
   engine: BrowserEngine
   humanize: boolean
   geoip: boolean
+  authMethod: 'google' | 'github'
   resultsPath: string
   sessionsDir: string
   accountsPath: string
@@ -103,6 +105,12 @@ function parseArgs(argv: string[]): Partial<CliOptions> {
   if (has('--humanize')) result.humanize = true
   if (has('--no-geoip')) result.geoip = false
   if (has('--geoip')) result.geoip = true
+  if (has('--auth-method')) {
+    const m = get('--auth-method')
+    if (m === 'google' || m === 'github') {
+      result.authMethod = m
+    }
+  }
 
   return result
 }
@@ -142,6 +150,7 @@ const DEFAULT_OPTIONS: CliOptions = {
   engine: 'camoufox',
   humanize: true,
   geoip: true,
+  authMethod: 'google',
   resultsPath: 'show/results.json',
   sessionsDir: 'show/sessions',
   accountsPath: 'accounts/gsuite.txt',
@@ -165,6 +174,9 @@ type RunRecord = {
   // OpenRouter API key generation result
   openrouterApiKey?: string
   openrouterError?: string
+  // GitHub login result
+  githubUsername?: string
+  githubError?: string
 }
 
 function safeEmailSlug(email: string): string {
@@ -234,17 +246,35 @@ async function runRegistration(opts: CliOptions): Promise<{ ok: number; fail: nu
     const { account, release } = claim
 
     try {
-      const result = await registerKiroWithOpenRouter({
-        email: account.email,
-        password: account.password,
-        log: taskLog,
-        proxyUrl: opts.proxyUrl,
-        engine: opts.engine,
-        headless: opts.headless,
-        useFingerprint: opts.useFingerprint,
-        humanize: opts.humanize,
-        geoip: opts.geoip
-      })
+      let result: any
+      
+      if (opts.authMethod === 'github') {
+        taskLog('[github] registering with GitHub...')
+        result = await registerKiroWithGitHub({
+          email: account.email,
+          password: account.password,
+          log: taskLog,
+          proxyUrl: opts.proxyUrl,
+          engine: opts.engine,
+          headless: opts.headless,
+          useFingerprint: opts.useFingerprint,
+          humanize: opts.humanize,
+          geoip: opts.geoip
+        })
+      } else {
+        taskLog('[google] registering with Google + OpenRouter...')
+        result = await registerKiroWithOpenRouter({
+          email: account.email,
+          password: account.password,
+          log: taskLog,
+          proxyUrl: opts.proxyUrl,
+          engine: opts.engine,
+          headless: opts.headless,
+          useFingerprint: opts.useFingerprint,
+          humanize: opts.humanize,
+          geoip: opts.geoip
+        })
+      }
 
       if (!result.success) {
         records[idx] = {
@@ -272,14 +302,17 @@ async function runRegistration(opts: CliOptions): Promise<{ ok: number; fail: nu
         cognitoUsername: result.session!.tokens.cognitoUsername,
         cognitoClientId: result.session!.tokens.cognitoClientId,
         openrouterApiKey: result.openrouterApiKey,
-        openrouterError: result.openrouterError
+        openrouterError: result.openrouterError,
+        githubUsername: result.githubSession?.username,
+        githubError: result.githubError
       }
       await release({ status: 'success' })
       const tokenSummary = result.session!.tokens.refreshToken
         ? `refreshToken=${result.session!.tokens.refreshToken.substring(0, 24)}…`
         : 'no refreshToken found'
-      const orStatus = result.openrouterApiKey ? ' | openrouter: ✓' : result.openrouterError ? ` | openrouter: ✗ (${result.openrouterError})` : ''
-      taskLog(`OK: ${tokenSummary} | session → ${sessionFile}${orStatus}`)
+      const orStatus = result.openrouterApiKey ? ' | openrouter: ✓' : result.openrouterError ? ` | openrouter: ✗` : ''
+      const ghStatus = result.githubSession?.username ? ` | github: ${result.githubSession.username}` : result.githubError ? ` | github: ✗` : ''
+      taskLog(`OK: ${tokenSummary} | session → ${sessionFile}${orStatus}${ghStatus}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       records[idx] = { email: account.email, success: false, error: msg }
@@ -370,6 +403,7 @@ async function interactiveMode(initialOptions: Partial<CliOptions>): Promise<voi
       `│ engine: ${currentOptions.engine}  headless: ${currentOptions.headless}  humanize: ${currentOptions.humanize}  geoip: ${currentOptions.geoip}`
     )
     log('dim', `│ fingerprint (chromium): ${currentOptions.useFingerprint}`)
+    log('dim', `│ auth-method: ${currentOptions.authMethod}`)
     log('dim', `│ proxy: ${currentOptions.proxyUrl ?? '(none)'}`)
     log('dim', `│ sessions: ${resolve(currentOptions.sessionsDir)}`)
     log('dim', '└──────────────────────────────────────────────────')
@@ -384,6 +418,7 @@ async function interactiveMode(initialOptions: Partial<CliOptions>): Promise<voi
     log('cyan', '[8] Set accounts file')
     log('cyan', '[9] Toggle humanize (camoufox)')
     log('cyan', '[a] Toggle geoip (camoufox)')
+    log('cyan', '[b] Toggle auth-method (google ↔ github)')
     log('cyan', '[f] Toggle chromium fingerprint injection')
     log('cyan', '[0] Quit')
     print('')
@@ -436,6 +471,9 @@ async function interactiveMode(initialOptions: Partial<CliOptions>): Promise<voi
         break
       case 'a':
         currentOptions.geoip = !currentOptions.geoip
+        break
+      case 'b':
+        currentOptions.authMethod = currentOptions.authMethod === 'google' ? 'github' : 'google'
         break
       case 'f':
         currentOptions.useFingerprint = !currentOptions.useFingerprint
