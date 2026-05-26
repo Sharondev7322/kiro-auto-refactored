@@ -3,6 +3,8 @@ import { resolve, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { execSync } from 'node:child_process'
 import { registerKiroWithGoogle } from '../lib/register'
+import { registerKiroWithOpenRouter } from '../lib/register-with-openrouter'
+import { generateOpenRouterApiKey } from '../lib/openrouter'
 import { AccountPool } from '../lib/accounts'
 import type { BrowserEngine } from '../lib/browser'
 import type { KiroSession } from '../lib/google-login'
@@ -160,6 +162,9 @@ type RunRecord = {
   refreshToken?: string
   cognitoUsername?: string
   cognitoClientId?: string
+  // OpenRouter API key generation result
+  openrouterApiKey?: string
+  openrouterError?: string
 }
 
 function safeEmailSlug(email: string): string {
@@ -229,7 +234,7 @@ async function runRegistration(opts: CliOptions): Promise<{ ok: number; fail: nu
     const { account, release } = claim
 
     try {
-      const result = await registerKiroWithGoogle({
+      const result = await registerKiroWithOpenRouter({
         email: account.email,
         password: account.password,
         log: taskLog,
@@ -253,24 +258,28 @@ async function runRegistration(opts: CliOptions): Promise<{ ok: number; fail: nu
         return
       }
 
-      const sessionFile = await saveSession(opts.sessionsDir, result.session)
+      const sessionFile = await saveSession(opts.sessionsDir, result.session!)
+      
       records[idx] = {
         email: result.email,
         success: true,
         sessionFile,
-        cookieCount: result.session.cookies.length,
-        capturedAt: result.session.capturedAt,
-        accessToken: result.session.tokens.accessToken,
-        idToken: result.session.tokens.idToken,
-        refreshToken: result.session.tokens.refreshToken,
-        cognitoUsername: result.session.tokens.cognitoUsername,
-        cognitoClientId: result.session.tokens.cognitoClientId
+        cookieCount: result.session!.cookies.length,
+        capturedAt: result.session!.capturedAt,
+        accessToken: result.session!.tokens.accessToken,
+        idToken: result.session!.tokens.idToken,
+        refreshToken: result.session!.tokens.refreshToken,
+        cognitoUsername: result.session!.tokens.cognitoUsername,
+        cognitoClientId: result.session!.tokens.cognitoClientId,
+        openrouterApiKey: result.openrouterApiKey,
+        openrouterError: result.openrouterError
       }
       await release({ status: 'success' })
-      const tokenSummary = result.session.tokens.refreshToken
-        ? `refreshToken=${result.session.tokens.refreshToken.substring(0, 24)}…`
+      const tokenSummary = result.session!.tokens.refreshToken
+        ? `refreshToken=${result.session!.tokens.refreshToken.substring(0, 24)}…`
         : 'no refreshToken found'
-      taskLog(`OK: ${tokenSummary} | session → ${sessionFile}`)
+      const orStatus = result.openrouterApiKey ? ' | openrouter: ✓' : result.openrouterError ? ` | openrouter: ✗ (${result.openrouterError})` : ''
+      taskLog(`OK: ${tokenSummary} | session → ${sessionFile}${orStatus}`)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       records[idx] = { email: account.email, success: false, error: msg }
